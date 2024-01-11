@@ -1,0 +1,1077 @@
+---
+title: "Machine Learning"
+author: "Brian Papiernik, Casey Kmet, JD Bertrand, Kiki VanZanten, Quinn Murphy"
+date: "2023-09-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Load Packages
+```{r}
+
+# install.packages("randomForest")
+# install.packages("rpart")
+# install.packages("caret")
+library(randomForest) # Load randomForest package to run bagging
+library(rpart) # Load rpart for decision trees
+library(caret) # Used for analysing results
+#install.packages("splitstackshape")
+library(splitstackshape) # Used for stratified sampling
+#install.packages("xgboost")
+#install.packages("caret")
+#install.packages("ggplot2")
+#library(devtools) 
+#install.packages("githubinstall")
+library(devtools)
+#install_github("AppliedDataSciencePartners/xgboostExplainer")
+#install.packages("SHAPforxgboost")
+#install.packages("GGally")
+#install.packages("gh")
+
+library(xgboost) # Load XGBoost
+library(caret) # Load Caret
+library(ggplot2) # Load ggplot2
+library(pROC) # Load proc
+library(SHAPforxgboost) # Load shap for XGBoost
+library(caTools)
+library(dplyr)
+library(GGally)
+library(ggplot2) # Load ggplot2
+library(pROC) # Load proc
+library(data.table)
+library(gh)
+library(commonmark)
+library(xgboostExplainer)
+library(dplyr)
+
+```
+
+
+##Preparations
+
+The lines below are how we ended up merging our two datasets: wide receiver stats dataset and wide receiver contract dataset. Once we exported the data frame WRData as a csv, our group decided to remove these lines from a chunk and only load our .csv into r through read.csv. This was done for knitting purposes.
+
+WRData <- merge(widereciver_xls, widereciver_xls2, by = "player_name", all = TRUE)
+
+WRData <- WRData[!is.na(WRData$team),]
+WRData <- WRData[!is.na(WRData$contract_length),]
+
+
+WRData
+
+
+```{r}
+WRData <- read.csv("widereceiver.csv")
+
+WRData
+```
+The table above is the correct dataset. It has 142 total receivers and their values for 26 different variables.
+
+
+```{r}
+
+set.seed(1)
+
+#Use 80% of dataset as training set and remaining 20% as testing set
+sample <- sample.split(WRData$contract_AAV, SplitRatio = 0.8)
+WR_train  <- subset(WRData, sample == TRUE)
+WR_test   <- subset(WRData, sample == FALSE)
+dim(WR_train)
+dim(WR_test)
+
+```
+In the code above, our group creates two new datasets: training set and testing set. The training set WR_train has 113 total wide receivers along with the values for 26 different variables. The testing set WR_test has 29 total wide receivers along with the values for 26 different variables.
+
+
+```{r}
+head(WRData) #Check first few rows
+```
+The code above checks the first 6 rows for the WRData
+
+
+```{r}
+tail(WRData) #Check last few rows of data
+```
+
+The code above checks the last 6 rows for the WRData
+
+```{r}
+summary(WRData) #Summarise Data
+```
+
+The code above shows the summary statistics for our 26 variables
+
+```{r}
+dim(WRData)
+```
+We see from the dimension that we have 23 variables in our data set, we view a summary of these as:
+```{r}
+summary(WRData)
+```
+
+
+For our response variable we are going to use AAV (Average Annual Value)
+```{r}
+summary(WRData$contract_AAV)
+```
+We learn from this that the lowest a player makes is $787,500 and the most a player makes is $30,000,000. It is interesting to see that the mean is greater than the median which means that the dataset is positive right skewed which makes sense because a lot of receivers are either on rookie contracts or team-friendly contracts. Only top tier receivers are making top tier contract AAV. The mean for all receivers is $5,683,155.
+
+##Data Exploration 
+Looking at contract lengths of WR's
+```{r}
+barplot(sort(table(WRData$contract_length),
+        decreasing=TRUE), 
+        horiz=TRUE, 
+        las=1,
+        main="Wide Reciever Contract Lengths", ylab="Contract Length",xlab="count")
+```
+Majority of NFL long term deals are 4 years and rarely are 5 years. Most players have shorter term deals (1-2 years) if they are not signed to a 4 year deal.
+
+Player Age Breakdowns 
+```{r}
+table(WRData$player_age)
+```
+
+
+##Correlation Analysis
+
+```{r}
+WR_DataCor <-  WRData %>% 
+  select(contract_AAV,games_played, player_ypr, player_success, player_yards_per_target, receptions_per_game,yards_per_game, player_target_per_game, player_td_per_game, player_first_downs_per_game)
+
+```
+
+
+```{r}
+
+cor(WR_DataCor)[,"contract_AAV"]
+```
+
+The code above how the variable: contract_AAV is correlated with the rest of the variables in the WR_DataCor dataset. It is interesting to see 4 variables correlated near 0.64 with contract_AAV.
+
+# Visuals
+
+```{r}
+##Comparing Salary AAV to Field Preformance
+
+plot(WRData$player_target_per_game, WRData$contract_AAV, xlab='Targets', ylab='Annual Average Salary')
+abline(lm(WRData$contract_AAV ~ WRData$player_target_per_game), col="blue")
+text(WRData$player_target_per_game[which(WRData$player_target_per_game > 4)], WRData$contract_AAV[which(WRData$player_target_per_game > 4)], labels=WRData$player_name[which(WRData$player_target_per_game > 4)],cex = .5, pos = 2)
+```
+Based no this graph showing the comparison of average salary to receptions per game (amount of catches per game), we can see that players like Tyreek Hill, Cooper Kupp, Davante Adams, and Stefon Diggs have high salaries but their on field production justifys the price tag. We then can look below the trend line and see players like Ja'Marr Chase, Justin Jefferson, Amon-Ra St.Brown and CeeDee Lamb are producing at the same rate as the highly paid players. These players are still on their rookie contracts but based on their on field performance they are due for massive contracts once their team begin contract negotiations.
+
+```{r}
+yardsvsAAv <- ggplot(WRData, # Set dataset 
+              aes(y = yards_per_game, # Set y-axis as insurance charges 
+                  x = contract_AAV)) + # Set x-axis as bmi.
+  geom_point(color = "blue", alpha = 0.3) + # Use geom_point to get scatter plot
+  geom_smooth(method = "lm") + # Add smoothing line
+  theme_bw() + # Set theme for plot
+  theme(panel.grid.major = element_blank(), # Turn of the background grid
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank()) +
+  labs(y = "Player Yards Per Game", # Set plot labels
+       x = "Contract AAV",
+       title = "Contract AAV vs. Player Yards Per Game") +
+  geom_text( data = WRData[], inherit.aes = FALSE,
+              aes(y = yards_per_game, # Set y-axis as insurance charges 
+                  x = contract_AAV),
+    label=rownames(WRData), 
+    nudge_x = 0.25, nudge_y = 0.25, 
+    check_overlap = T)
+
+
+yardsvsAAv # Generate plot
+```
+
+This visual above shows the relationship between the x-axis Contract AAV and the y-axis Player Yards Per Game. Each point on the graph is index by the row for each receiver in the WRData set. It is interesting to note that the players above the trend line overperforming their Player Yards Per Game based on their Contract AAV. The players below the trend line are underperforming their Player Yards Per Game based on their Contract AAV. Point 80 is Justin Jefferson who is still on his rookie contract, so he is massively out performing his contract.
+
+# Regression Analysis
+
+```{r}
+WR_regression <- 
+  WRData %>% select(contract_AAV,games_played, player_ypr, player_success, player_yards_per_target, receptions_per_game,yards_per_game, player_target_per_game, player_td_per_game, player_first_downs_per_game )
+WRFIT1 <- lm(contract_AAV~., data= WR_regression)
+summary(WRFIT1)
+```
+
+When running our multiple regression model, we ended up calculating an adjusted R-Squared value of 0.4359, which shows that our predictors have a weak to semi-strong predictive relationship with a player’s Contract AAV. Our adjusted R-Squared value, which is 0.4359 in this case, indicates that approximately 43.59% of the variation in a player’s Contract AAV can be attributed to the predictive variables. After looking at the summary of the multiple regression, it is important to note that none of the predictors ended up being statistically significant. The closest statistically significant variables was Yards Per Game with a p-value of 0.132. The starting point for a player's Contract AAV is indicated to be negative $1,164,039 which is interesting because some players are on rookie contracts under $1,000,000. It is interesting to note that for every additional Player First Downs Per Game increases their contract AAV by $1,238,070.
+
+# Preparing Data for XGBoost
+
+```{r}
+dtrain <- xgb.DMatrix(data = as.matrix(WR_train[, c(3, 5:21)]), label = as.numeric(WR_train$contract_AAV))
+# Create test matrix
+dtest <- xgb.DMatrix(data = as.matrix(WR_test[, c(3, 5:21)]), label = as.numeric(WR_test$contract_AAV))
+```
+
+XGBoost uses its own data type called DMatrix that is an efficient method for storing sparse matrices (Many zeros).
+
+# Training our XGBoost Model
+
+```{r}
+set.seed(111111)
+bst_1 <- xgboost(data = dtrain, # Set training data
+               
+               nrounds = 100, # Set number of rounds
+               
+               verbose = 1, # 1 - Prints out fit
+                print_every_n = 20) # Prints out result every 20th iteration
+               
+              
+```
+```{r}
+set.seed(111111)
+bst <- xgb.cv(data = dtrain, # Set training data
+              
+              nfold = 5, # Use 5 fold cross-validation
+               
+               eta = 0.1, # Set learning rate
+              
+               nrounds = 1000, # Set number of rounds
+               early_stopping_rounds = 50, # Set number of rounds to stop at if there is no improvement
+               
+               verbose = 1, # 1 - Prints out fit
+               nthread = 1, # Set number of parallel threads
+               print_every_n = 20) # Prints out result every 20th iteration
+              
+```
+From this we see 24 was the optimal number of iterations for our model. We use this number solely to ensure that we are doing a sufficient amount of rounds for our next tuning stages. We will set the number of iterations to 100 and include an early stop parameter of 20 for our next round of tuning.
+
+
+
+```{r}
+max_depth_vals <- c(3, 5, 7, 10, 15) # Create vector of max depth values
+min_child_weight <- c(1,3,5,7, 10, 15) # Create vector of min child values
+
+# Expand grid of parameter values
+cv_params <- expand.grid(max_depth_vals, min_child_weight)
+names(cv_params) <- c("max_depth", "min_child_weight")
+# Create results vector
+rmse_vec  <- rep(NA, nrow(cv_params)) 
+# Loop through results
+for(i in 1:nrow(cv_params)){
+  set.seed(111111)
+  bst_tune <- xgb.cv(data = dtrain, # Set training data
+                     
+                     nfold = 5, # Use 5 fold cross-validation
+                     
+                     eta = 0.1, # Set learning rate
+                     max.depth = cv_params$max_depth[i], # Set max depth
+                     min_child_weight = cv_params$min_child_weight[i], # Set minimum number of samples in node to split
+                     
+                     
+                     nrounds = 100, # Set number of rounds
+                     early_stopping_rounds = 20, # Set number of rounds to stop at if there is no improvement
+                     
+                     verbose = 1, # 1 - Prints out fit
+                     nthread = 1, # Set number of parallel threads
+                     print_every_n = 20 # Prints out result every 20th iteration
+                     
+  ) # Set evaluation metric to use
+  
+  rmse_vec[i] <- bst_tune$evaluation_log$test_rmse_mean[bst_tune$best_ntreelimit]
+  
+  
+}
+```
+
+
+```{r}
+# Join results in dataset
+res_db <- cbind.data.frame(cv_params, rmse_vec)
+names(res_db)[3] <- c("rmse") 
+res_db$max_depth <- as.factor(res_db$max_depth) # Convert tree number to factor for plotting
+res_db$min_child_weight <- as.factor(res_db$min_child_weight) # Convert node size to factor for plotting
+# Print AUC heatmap
+g_2 <- ggplot(res_db, aes(y = max_depth, x = min_child_weight, fill = rmse)) + # set aesthetics
+  geom_tile() + # Use geom_tile for heatmap
+  theme_bw() + # Set theme
+  scale_fill_gradient2(low = "blue", # Choose low color
+                       mid = "white", # Choose mid color
+                       high = "red", # Choose high color
+                       midpoint =mean(res_db$rmse), # Choose mid point
+                       space = "Lab", 
+                       na.value ="grey", # Choose NA value
+                       guide = "colourbar", # Set color bar
+                       aesthetics = "fill") + # Select aesthetics to apply
+  labs(x = "Minimum Child Weight", y = "Max Depth", fill = "RMSE") # Set labels
+g_2 # Generate plot
+```
+
+
+
+```{r}
+res_db
+
+res_db[which.min(res_db$rmse),] # View best set of results
+
+```
+
+Here we see that the higher Minimum Child Weight (15) and any Max Depth have the lowest RMSE and works best for our model. However, lowest Minimum Child Weight (1 and 3) and lower Max Depths also work best with our model. Our best set of results is from a max_depth value of 3 and a min child weight of 3 has the lowest total RMSE, so our group decided to use max_depth value of 3 and a min child weight of 3.
+
+```{r}
+gamma_vals <- c(0, 0.05, 0.1, 0.15, 0.2) # Create vector of gamma values
+
+# Be Careful - This can take a very long time to run
+set.seed(111111)
+rmse_vec  <- rep(NA, length(gamma_vals))
+for(i in 1:length(gamma_vals)){
+  bst_tune <- xgb.cv(data = dtrain, # Set training data
+                     
+                     nfold = 5, # Use 5 fold cross-validation
+                     
+                     eta = 0.1, # Set learning rate
+                     max.depth = 3, # Set max depth
+                     min_child_weight = 3, # Set minimum number of samples in node to split
+                     gamma = gamma_vals[i], # Set minimum loss reduction for split
+                     
+                     
+                     
+                     nrounds = 100, # Set number of rounds
+                     early_stopping_rounds = 20, # Set number of rounds to stop at if there is no improvement
+                     
+                     verbose = 1, # 1 - Prints out fit
+                     nthread = 1, # Set number of parallel threads
+                     print_every_n = 20 # Prints out result every 20th iteration
+  ) # Set evaluation metric to use
+  
+  
+  rmse_vec[i] <- bst_tune$evaluation_log$test_rmse_mean[bst_tune$best_ntreelimit]
+  
+  
+}
+```
+
+Best is 65, now tune the subsample and colsample by tree parameters
+```{r}
+cbind.data.frame(gamma_vals, rmse_vec)
+```
+Here we see that a gamma value of 0.15 gives us the lowest RMSE.
+
+```{r}
+###### 3 - Subsample and Column sample Tuning ######
+
+# Be Careful - This can take a very long time to run
+subsample <- c(0.6, 0.7, 0.8, 0.9, 1) # Create vector of subsample values
+colsample_by_tree <- c(0.6, 0.7, 0.8, 0.9, 1) # Create vector of col sample values
+
+# Expand grid of tuning parameters
+cv_params <- expand.grid(subsample, colsample_by_tree)
+names(cv_params) <- c("subsample", "colsample_by_tree")
+# Create vectors to store results
+rmse_vec <- rep(NA, nrow(cv_params)) 
+# Loop through parameter values
+for(i in 1:nrow(cv_params)){
+  set.seed(111111)
+  bst_tune <- xgb.cv(data = dtrain, # Set training data
+                     
+                     nfold = 5, # Use 5 fold cross-validation
+                     
+                     eta = 0.1, # Set learning rate
+                     max.depth = 3, # Set max depth
+                     min_child_weight = 3, # Set minimum number of samples in node to split
+                     gamma = .15, # Set minimum loss reduction for split
+                     subsample = cv_params$subsample[i], # Set proportion of training data to use in tree
+                     colsample_bytree = cv_params$colsample_by_tree[i], # Set number of variables to use in each tree
+                     
+                     nrounds = 150, # Set number of rounds
+                     early_stopping_rounds = 20, # Set number of rounds to stop at if there is no improvement
+                     
+                     verbose = 1, # 1 - Prints out fit
+                     nthread = 1, # Set number of parallel threads
+                     print_every_n = 20 # Prints out result every 20th iteration
+  ) # Set evaluation metric to use
+  
+  
+  rmse_vec[i] <- bst_tune$evaluation_log$test_rmse_mean[bst_tune$best_ntreelimit]
+  
+  
+}
+```
+
+```{r}
+# visualise tuning sample params
+
+res_db <- cbind.data.frame(cv_params, rmse_vec)
+names(res_db)[3] <- c("rmse") 
+res_db$subsample <- as.factor(res_db$subsample) # Convert tree number to factor for plotting
+res_db$colsample_by_tree <- as.factor(res_db$colsample_by_tree) # Convert node size to factor for plotting
+g_4 <- ggplot(res_db, aes(y = colsample_by_tree, x = subsample, fill = rmse)) + # set aesthetics
+  geom_tile() + # Use geom_tile for heatmap
+  theme_bw() + # Set theme
+  scale_fill_gradient2(low = "blue", # Choose low color
+                       mid = "white", # Choose mid color
+                       high = "red", # Choose high color
+                       midpoint =mean(res_db$rmse), # Choose mid point
+                       space = "Lab", 
+                       na.value ="grey", # Choose NA value
+                       guide = "colourbar", # Set color bar
+                       aesthetics = "fill") + # Select aesthetics to apply
+  labs(x = "Subsample", y = "Column Sample by Tree", fill = "RMSE") # Set labels
+g_4 # Generate plot
+```
+
+```{r}
+res_db
+```
+
+From this it looks like the optimal values of the parameters to use are a subsample parameter of 0.6 and a colsample_by_tree of 1 because it has the lowest RMSE. 
+
+```{r}
+###### 4 - eta tuning ######
+
+# Use xgb.cv to run cross-validation inside xgboost
+set.seed(111111)
+bst_mod_1 <- xgb.cv(data = dtrain, # Set training data
+                    
+                    nfold = 5, # Use 5 fold cross-validation
+                    
+                    eta = 0.3, # Set learning rate
+                    max.depth = 3, # Set max depth
+                    min_child_weight = 3, # Set minimum number of samples in node to split
+                    gamma = .15, # Set minimum loss reduction for split
+                    subsample = 0.6, # Set proportion of training data to use in tree
+                    colsample_bytree =  1, # Set number of variables to use in each tree
+                    
+                    nrounds = 1000, # Set number of rounds
+                    early_stopping_rounds = 20, # Set number of rounds to stop at if there is no improvement
+                    
+                    verbose = 1, # 1 - Prints out fit
+                    nthread = 1, # Set number of parallel threads
+                    print_every_n = 20 # Prints out result every 20th iteration
+) # Set evaluation metric to use
+```
+```{r}
+set.seed(111111)
+bst_mod_2 <- xgb.cv(data = dtrain, # Set training data
+                    
+                    nfold = 5, # Use 5 fold cross-validation
+                    
+                    eta = 0.1, # Set learning rate
+                    max.depth =  3, # Set max depth
+                    min_child_weight = 3, # Set minimum number of samples in node to split
+                    gamma = .15, # Set minimum loss reduction for split
+                    subsample = 0.6 , # Set proportion of training data to use in tree
+                    colsample_bytree = 1, # Set number of variables to use in each tree
+                    
+                    nrounds = 1000, # Set number of rounds
+                    early_stopping_rounds = 20, # Set number of rounds to stop at if there is no improvement
+                    
+                    verbose = 1, # 1 - Prints out fit
+                    nthread = 1, # Set number of parallel threads
+                    print_every_n = 20 # Prints out result every 20th iteration
+) # Set evaluation metric to use
+```
+```{r}
+set.seed(111111)
+bst_mod_3 <- xgb.cv(data = dtrain, # Set training data
+                    
+                    nfold = 5, # Use 5 fold cross-validation
+                    
+                    eta = 0.05, # Set learning rate
+                    max.depth = 3, # Set max depth
+                    min_child_weight = 3 , # Set minimum number of samples in node to split
+                    gamma = .15, # Set minimum loss reduction for split
+                    subsample = 0.6 , # Set proportion of training data to use in tree
+                    colsample_bytree =  1, # Set number of variables to use in each tree
+                    
+                    nrounds = 1000, # Set number of rounds
+                    early_stopping_rounds = 20, # Set number of rounds to stop at if there is no improvement
+                    
+                    verbose = 1, # 1 - Prints out fit
+                    nthread = 1, # Set number of parallel threads
+                    print_every_n = 20 # Prints out result every 20th iteration
+) # Set evaluation metric to use
+```
+
+```{r}
+set.seed(111111)
+bst_mod_4 <- xgb.cv(data = dtrain, # Set training data
+                    
+                    nfold = 5, # Use 5 fold cross-validation
+                    
+                    eta = 0.01, # Set learning rate
+                    max.depth = 3, # Set max depth
+                    min_child_weight = 3, # Set minimum number of samples in node to split
+                    gamma = 0.15, # Set minimum loss reduction for split
+                    subsample = 0.6 , # Set proportion of training data to use in tree
+                    colsample_bytree = 1, # Set number of variables to use in each tree
+                    
+                    nrounds = 1000, # Set number of rounds
+                    early_stopping_rounds = 20, # Set number of rounds to stop at if there is no improvement
+                    
+                    verbose = 1, # 1 - Prints out fit
+                    nthread = 1, # Set number of parallel threads
+                    print_every_n = 20 # Prints out result every 20th iteration
+) # Set evaluation metric to use
+
+```
+```{r}
+set.seed(111111)
+bst_mod_5 <- xgb.cv(data = dtrain, # Set training data
+                    
+                    nfold = 5, # Use 5 fold cross-validation
+                    
+                    eta = 0.005, # Set learning rate
+                    max.depth = 3, # Set max depth
+                    min_child_weight = 3, # Set minimum number of samples in node to split
+                    gamma = .15, # Set minimum loss reduction for split
+                    subsample = 0.6 , # Set proportion of training data to use in tree
+                    colsample_bytree = 1, # Set number of variables to use in each tree
+                    
+                    nrounds = 1000, # Set number of rounds
+                    early_stopping_rounds = 20, # Set number of rounds to stop at if there is no improvement
+                    
+                    verbose = 1, # 1 - Prints out fit
+                    nthread = 1, # Set number of parallel threads
+                    print_every_n = 20 # Prints out result every 20th iteration
+                    
+) # Set evaluation metric to use
+```
+```{r}
+# Extract results for model with eta = 0.3
+pd1 <- cbind.data.frame(bst_mod_1$evaluation_log[,c("iter", "test_rmse_mean")], rep(0.3, nrow(bst_mod_1$evaluation_log)))
+names(pd1)[3] <- "eta"
+# Extract results for model with eta = 0.1
+pd2 <- cbind.data.frame(bst_mod_2$evaluation_log[,c("iter", "test_rmse_mean")], rep(0.1, nrow(bst_mod_2$evaluation_log)))
+names(pd2)[3] <- "eta"
+# Extract results for model with eta = 0.05
+pd3 <- cbind.data.frame(bst_mod_3$evaluation_log[,c("iter", "test_rmse_mean")], rep(0.05, nrow(bst_mod_3$evaluation_log)))
+names(pd3)[3] <- "eta"
+# Extract results for model with eta = 0.01
+pd4 <- cbind.data.frame(bst_mod_4$evaluation_log[,c("iter", "test_rmse_mean")], rep(0.01, nrow(bst_mod_4$evaluation_log)))
+names(pd4)[3] <- "eta"
+# Extract results for model with eta = 0.005
+pd5 <- cbind.data.frame(bst_mod_5$evaluation_log[,c("iter", "test_rmse_mean")], rep(0.005, nrow(bst_mod_5$evaluation_log)))
+names(pd5)[3] <- "eta"
+# Join datasets
+plot_data <- rbind.data.frame(pd1, pd2, pd3, pd4, pd5)
+# Converty ETA to factor
+plot_data$eta <- as.factor(plot_data$eta)
+# Plot points
+g_6 <- ggplot(plot_data, aes(x = iter, y = test_rmse_mean, color = eta))+
+  geom_point(alpha = 0.5) +
+  theme_bw() + # Set theme
+  theme(panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+  labs(x = "Number of Trees", title = "RMSE v Number of Trees",
+       y = "RMSE", color = "Learning \n Rate")  # Set labels
+g_6
+```
+
+```{r}
+g_7 <- ggplot(plot_data, aes(x = iter, y = test_rmse_mean, color = eta))+
+  geom_smooth(alpha = 0.5) +
+  theme_bw() + # Set theme
+  theme(panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+  labs(x = "Number of Trees", title = "RMSE v Number of Trees",
+       y = "RMSE", color = "Learning \n Rate")  # Set labels
+g_7
+
+```
+
+Here we are looking for the line which reaches the lowest error rate. From this it looks like an eta value of 0.1 gives the best results for this dataset. We decided to use 0.1 because we saw the lowest point of the graph for the line 0.1. We can now fit our final model using our tuned hyper parameters:
+
+```{r}
+# fit final xgb model
+set.seed(111111)
+bst_final <- xgboost(data = dtrain, # Set training data
+                     
+                     
+                     
+                     eta = .1, # Set learning rate
+                     max.depth =  3, # Set max depth
+                     min_child_weight = 3, # Set minimum number of samples in node to split
+                     gamma = .15, # Set minimum loss reduction for split
+                     subsample =  0.6, # Set proportion of training data to use in tree
+                     colsample_bytree = 1, # Set number of variables to use in each tree
+                     
+                     nrounds = 100, # Set number of rounds
+                     early_stopping_rounds = 20, # Set number of rounds to stop at if there is no improvement
+                     
+                     verbose = 1, # 1 - Prints out fit
+                     nthread = 1, # Set number of parallel threads
+                     print_every_n = 20 # Prints out result every 20th iteration
+                     
+) # Set evaluation metric to use
+```
+
+```{r}
+# Extract importance
+imp_mat <- xgb.importance(model = bst_final)
+# Plot importance (top 10 variables)
+xgb.plot.importance(imp_mat, top_n = 10)
+```
+
+From this we see that our most important variables for predicting Contract AAV for our model are player_target_per_game, yards_per_game, player_age, and receptions_per_game.
+
+The code below is to help create our waterfall from the XG Explainer. This will allow us to select whichever player we want to predict their Contract AAV based on our waterfall variables. This allows us to create a waterfall visual for the player that shows their predicted Contract AAV.
+
+```{r}
+WR2 <-  WRData %>% 
+  select(contract_AAV,player_target_per_game, yards_per_game,player_age, receptions_per_game)
+WRFIT2 <- lm(contract_AAV~., data= WR2)
+summary(WRFIT2)
+
+```
+
+```{r}
+getTreeBreakdown = function(tree, col_names){
+
+  ####accepts a tree (data table), and column names
+  ####outputs a data table, of the impact of each variable + intercept, for each leaf
+
+  tree_breakdown <- vector("list", length(col_names)  + 2)
+  names(tree_breakdown) = c(col_names,'intercept','leaf')
+
+  leaves = tree[leaf==T, Node]
+
+  for (leaf in leaves){
+
+    leaf_breakdown = getLeafBreakdown(tree,leaf,col_names)
+    leaf_breakdown$leaf = leaf
+    tree_breakdown = rbindlist(append(list(tree_breakdown),list(leaf_breakdown)))
+  }
+
+  return (tree_breakdown)
+}
+
+buildExplainerFromTreeList = function(tree_list,col_names){
+ 
+  ####accepts a list of trees and column names
+  ####outputs a data table, of the impact of each variable + intercept, for each leaf
+
+  tree_list_breakdown <- vector("list", length(col_names)  + 3)
+  names(tree_list_breakdown) = c(col_names,'intercept', 'leaf','tree')
+
+  num_trees = length(tree_list)
+ 
+  cat('\n\nGetting breakdown for each leaf of each tree...\n')
+  pb <- txtProgressBar(style=3)
+ 
+  for (x in 1:num_trees){
+    tree = tree_list[[x]]
+    tree_breakdown = getTreeBreakdown(tree, col_names)
+    tree_breakdown$tree = x - 1
+    tree_list_breakdown = rbindlist(append(list(tree_list_breakdown),list(tree_breakdown)))
+    setTxtProgressBar(pb, x / num_trees)
+  }
+ 
+  return (tree_list_breakdown)
+ 
+}
+
+
+getStatsForTrees = function(trees, nodes.train, type = "binary", base_score = 0.5){
+  #Accepts data table of tree (the output of xgb.model.dt.tree)
+  #Returns a list of tree, with the stats filled in
+ 
+  tree_list = copy(trees)
+  tree_list[,leaf := Feature == 'Leaf']
+  tree_list[,H:=Cover]
+ 
+  non.leaves = which(tree_list[,leaf]==F)
+
+ 
+  # The default cover (H) seems to lose precision so this loop recalculates it for each node of each tree
+  cat('\n\nRecalculating the cover for each non-leaf... \n')
+  pb <- txtProgressBar(style=3)
+  j = 0
+  for (i in rev(non.leaves)){
+    left = tree_list[i,Yes]
+    right = tree_list[i,No]
+    tree_list[i,H:=tree_list[ID==left,H] + tree_list[ID==right,H]]
+    j=j+1
+    setTxtProgressBar(pb, j / length(non.leaves))
+  }
+ 
+
+  if (type == 'regression'){
+    base_weight = base_score
+  } else{
+    base_weight = log(base_score / (1-base_score))
+  }
+ 
+  tree_list[leaf==T,weight:=base_weight + Quality]
+ 
+  tree_list[,previous_weight:=base_weight]
+  tree_list[1,previous_weight:=0]
+ 
+  tree_list[leaf==T,G:=-weight*H]
+ 
+  tree_list = split(tree_list,as.factor(tree_list$Tree))
+  num_tree_list = length(tree_list)
+  treenums =  as.character(0:(num_tree_list-1))
+  t = 0
+  cat('\n\nFinding the stats for the xgboost trees...\n')
+  pb <- txtProgressBar(style=3)
+  for (tree in tree_list){
+    t=t+1
+    num_nodes = nrow(tree)
+    non_leaf_rows = rev(which(tree[,leaf]==F))
+    for (r in non_leaf_rows){
+        left = tree[r,Yes]
+        right = tree[r,No]
+        leftG = tree[ID==left,G]
+        rightG = tree[ID==right,G]
+       
+        tree[r,G:=leftG+rightG]
+        w=tree[r,-G/H]
+       
+        tree[r,weight:=w]
+        tree[ID==left,previous_weight:=w]
+        tree[ID==right,previous_weight:=w]
+    }
+   
+    tree[,uplift_weight:=weight-previous_weight]
+    setTxtProgressBar(pb, t / num_tree_list)
+  }
+ 
+  return (tree_list)
+}
+
+
+getLeafBreakdown = function(tree,leaf,col_names){
+ 
+  ####accepts a tree, the leaf id to breakdown and column names
+  ####outputs a list of the impact of each variable + intercept
+ 
+  impacts = as.list(rep(0,length(col_names)))
+  names(impacts) = col_names
+ 
+  path = findPath(tree,leaf)
+  reduced_tree = tree[Node %in% path,.(Feature,uplift_weight)]
+ 
+  impacts$intercept=reduced_tree[1,uplift_weight]
+  reduced_tree[,uplift_weight:=shift(uplift_weight,type='lead')]
+ 
+  tmp = reduced_tree[,.(sum=sum(uplift_weight)),by=Feature]
+  tmp = tmp[-nrow(tmp)]
+  impacts[tmp[,Feature]]=tmp[,sum]
+ 
+  return (impacts)
+}
+
+findPath = function(tree, currentnode, path = c()){
+ 
+  #accepts a tree data table, and the node to reach
+  #path is used in the recursive function - do not set this
+ 
+  while(currentnode>0){
+    path = c(path,currentnode)
+    currentlabel = tree[Node==currentnode,ID]
+    currentnode = c(tree[Yes==currentlabel,Node],tree[No==currentlabel,Node])
+  }
+  return (sort(c(path,0)))
+ 
+}
+
+
+findLeaves = function(tree, currentnode){
+ 
+  if (tree[currentnode,'Feature']=='Leaf'){
+    leaves = currentnode
+  }else{
+    leftnode = tree[currentnode,Yes]
+    rightnode = tree[currentnode,No]
+    leaves = c(findLeaves(tree,'leftnode',with=FALSE),findLeaves(tree,'rightnode',with=FALSE))
+  }
+ 
+  return (sort(leaves))
+ 
+ 
+}
+
+
+
+buildExplainer = function(xgb.model,
+                          trainingData,
+                       
+                          type = "binary", base_score = 0.5, trees_idx = NULL){
+
+  col_names = colnames(trainingData)
+  cat('\nCreating the trees of the xgboost model...')
+  trees = xgb.model.dt.tree(col_names, model = xgb.model, trees = trees_idx)
+  cat('\nGetting the leaf nodes for the training set observations...')
+  nodes.train = predict(xgb.model,trainingData,predleaf =TRUE)
+
+  cat('\nBuilding the Explainer...')
+  cat('\nSTEP 1 of 2')
+  tree_list = getStatsForTrees(trees, nodes.train, type = type, base_score = base_score)
+  cat('\n\nSTEP 2 of 2')
+  explainer = buildExplainerFromTreeList(tree_list,col_names)
+
+  cat('\n\nDONE!\n\n')
+
+  return (explainer)
+}
+
+
+
+
+
+
+
+
+```
+
+
+```{r}
+explainer = buildExplainer(bst_final, dtrain, type="regression", base_score = 0.5, trees_idx = NULL) # Create explainer
+```
+```{r}
+pred.breakdown = explainPredictions(bst_final, explainer, dtest) # Breakdown predictions
+```
+```{r}
+showWaterfall(bst_final, explainer, dtest, as.matrix(WR_test[, c(3, 5:21)]) ,1, type = "regression", threshold = 0.07)
+```
+Allen Lazard contract AAV: 
+actual: $11,000,000
+prediction: 12,160,798
+
+We used Allen Lazard because he just got paid this offseason based on his 2022 statistics.
+
+
+```{r}
+showWaterfall(bst_final, explainer, dtest, as.matrix(WR_train[, c(3, 5:21)]) ,14, type = "regression", threshold = 0.07)
+```
+CeeDee Lamb contract AAV: 
+Prediction: $16,171,029
+
+Player above is CeeDee Lamb, on rookie deal, predictor evaluates him as almost double of what he should recieve. 
+
+
+
+```{r}
+showWaterfall(bst_final, explainer, dtest, as.matrix(WR_train[, c(3, 5:21)]) ,14, type = "regression", threshold = 0.07)
+```
+J. Chase. Value Contract AAV:
+Prediction: $16,171,029
+
+
+
+
+# Random Forest
+
+```{r}
+rf_mod_wr <- randomForest(contract_AAV ~.,
+                          data = WR_train[,c(3, 5:21,24)], 
+                          ntree = 200,
+                          nodesize = 1)
+rf_pred_wr <- predict(rf_mod_wr, WR_test)
+
+rf_mod_wr
+```
+Our first model shows that the % of Variability explained by this model is 55.9% from rf_mod_wr. This changes for each new knit.
+
+
+```{r}
+tree_1 <- getTree(rf_mod_wr, 3, labelVar=TRUE) # Extract single tree,
+head(tree_1) 
+```
+
+```{r}
+
+
+oob_error <- rf_mod_wr$mse 
+oob_error
+
+length(oob_error)
+plot_dat <- cbind.data.frame(rep(1:length(oob_error)), oob_error) # Create plot data
+names(plot_dat) <- c("trees", "oob_error") 
+
+
+# Plot oob error
+g_1 <- ggplot(plot_dat, aes(x = trees, y = oob_error)) + # Set x as trees and y as error
+  geom_point(alpha = 0.5, color = "blue") + # Select geom point
+  geom_smooth() + # Add smoothing line
+  theme_bw() + # Set theme
+  theme(panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+  labs(x = "Number of Trees", title = "Error Rate v Number of Trees",
+       y = "Error Rate")  # Set labels
+g_1 # Print plot
+```
+
+From this plot we can see that as the number of trees increase the error rate continues to fall as the number of trees increases. Lets try increasing the number of trees to 1,000 and see if we will get continued improvement. It starts flattening around 100 trees.
+
+
+```{r}
+rf_mod_wr2 <- randomForest(contract_AAV ~.,
+                          data = WR_train[,c(3, 5:21,24)],
+                          ntree = 1000,
+                          nodesize = 1)
+rf_pred_wr2 <- predict(rf_mod_wr2, WR_test)
+rf_mod_wr2
+
+
+
+
+oob_error <- rf_mod_wr2$mse # Extract oob error
+length(oob_error)
+
+plot_dat <- cbind.data.frame(rep(1:length(oob_error)), oob_error) # Create plot data
+names(plot_dat) <- c("trees", "oob_error") # Name plot data
+
+
+# Plot oob error
+g_2 <- ggplot(plot_dat, aes(x = trees, y = oob_error)) + # Set x as trees and y as error
+  geom_point(alpha = 0.5, color = "blue") + # Select geom point
+  geom_smooth() + # Add smoothing line
+  theme_bw() + # Set theme
+  theme(panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+  labs(x = "Number of Trees", title = "MSE v Number of Trees",
+       y = "MSE")  # Set labels
+g_2 # Create plot
+```
+
+Here we see that initially the error rate falls significantly and then levels off after about a little past 250 trees, though there is a slight continuous improvement as the number of trees increases. The plot also shows that the model did not improve significantly from 375 trees to 1000 trees.
+
+Also, the % of Variability explained by the model increased slightly to 56.75 and the mean of squared residuals slightly decreased.
+
+# Parameter Tuning
+
+```{r}
+# Careful this can take a long time to run
+trees <- c(10, 25, 50, 100, 200, 500, 1000) # Create vector of possible tree sizes
+nodesize <- c(1, 10, 25, 50, 100, 200, 500, 1000) # Create vector of possible node sizes
+
+params <- expand.grid(trees, nodesize) # Expand grid to get data frame of parameter combinations
+names(params) <- c("trees", "nodesize") # Name parameter data frame
+res_vec <- rep(NA, nrow(params)) # Create vector to store accuracy results
+
+for(i in 1:nrow(params)){ # For each set of parameters
+  set.seed(987654) # Set seed for reproducability
+  mod <- randomForest(contract_AAV ~.,
+                          data = WR_train[,c(3, 5:21,24)], # Set data
+                      mtry = 4, # Set number of variables
+                      importance = FALSE,  #
+                      ntree = params$trees[i], # Set number of trees
+                      nodesize = params$nodesize[i]) # Set node size
+  res_vec[i] <-  mod$mse[length(mod$mse)] #Professor Martin the issue with length is here. I messed with this equation a little
+}
+```
+
+```{r}
+summary(res_vec)
+```
+
+```{r}
+res_db <- cbind.data.frame(params, res_vec) # Join parameters and accuracy results
+names(res_db)[3] <- "mse" # Name accuracy results column
+res_db # Print accuracy results column
+```
+In the code above, we analyze the combinations of parameters with our MSE. Next, we decide to visualize this.
+
+```{r}
+res_db$trees <- as.factor(res_db$trees) # Convert tree number to factor for plotting
+res_db$nodesize <- as.factor(res_db$nodesize) # Convert node size to factor for plotting
+g_2 <- ggplot(res_db, aes(y = trees, x = nodesize, fill = mse)) + # set aesthetics
+  geom_tile() + # Use geom_tile for heatmap
+  theme_bw() + # Set theme
+  scale_fill_gradient2(low = "blue", # Choose low color
+    mid = "white", # Choose mid color
+    high = "red", # Choose high color
+    midpoint =mean(res_db$mse), # Choose mid point
+    space = "Lab", 
+    na.value ="grey", # Choose NA value
+    guide = "colourbar", # Set color bar
+    aesthetics = "fill") + # Select aesthetics to apply
+  labs(x = "Node Size", y = "Number of Trees", fill = "MSE") # Set labels
+g_2 # Generate plot
+```
+Here we see that a small node size is best for the random forest model. As the number of tree increases with the small node size, the MSE continues to get lower and lower. Large node sizes and low number of trees has high MSE.
+
+
+```{r}
+res_db[which.min(res_db$mse),] # View best set of results
+```
+
+From the code above, we found the correct number of trees and nodesize for our lowest MSE. 1000 trees and a node size of 1 is the lowest MSE.
+
+```{r}
+set.seed(123456)
+rf_mod_wr3 <- randomForest(contract_AAV ~., # Set tree formula
+               data = WR_train[,c(3, 5:21,24)], # Set dataset
+             
+                ntree = 1000, # Set number of trees
+                nodesize = 1) # Set node size
+
+
+rf_pred_wr3 <- predict(rf_mod_wr3, WR_test)
+rf_mod_wr3
+
+```
+
+Here we see that our mean of squared residuals and % of Variability Explained stay very close to our previous rf_mod_wr_2.
+
+```{r}
+rf_mod_wr4 <- randomForest(contract_AAV ~., # Set tree formula
+                data = WR_train[,c(3, 5:21,24)], # Set dataset
+                
+                ntree = 1000, # Set number of trees
+                nodesize = 1,  # Set node size
+                importance = TRUE, # Set to true to generate importance matrix
+                proximity = TRUE) # Set to true to generate proximity matrix
+
+rf_pred_wr4 <- predict(rf_mod_wr4, WR_test)
+rf_mod_wr4
+
+```
+Here we see that this is our best random forest model because the mean of squared residuals decreased a lot and the % of variability explained increased to 58.14%. This is our final model.
+
+
+```{r}
+
+# Extract Importance
+importance_matrix <- randomForest::importance(rf_mod_wr4)
+# Print importance matrix
+importance_matrix
+```
+
+```{r}
+varImpPlot(rf_mod_wr4, type =1, n.var = 10) # Plot importance
+```
+
+This shows that the most important factors for determining MSE are age, player_target_per_game, player_first_downs_per_game, and receptions_per_game, and yards_per_game. 
+
+The only difference between our xgboost and random forest important factors is a different order of importance of these 5 factors depending on the model.
+
+# Comparing the two models
+
+
+```{r}
+
+xgb_preds <- predict(bst_final, dtest)
+
+
+library(Metrics)
+
+rmse(WR_test$contract_AAV, xgb_preds)
+
+```
+
+```{r}
+rf_preds <- predict(rf_mod_wr4, WR_test[,c(3, 5:21,24)])
+
+
+temp <- cbind.data.frame(WR_test$contract_AAV, rf_preds)
+temp <- na.omit(temp)
+rmse(temp$`WR_test$contract_AAV`, temp$rf_preds)
+```
+When comparing the two models (XGBoost and Random Forest), we found that XGBoost model was better because it had a lower RMSE. The XGboost model had a lower RMSE by about 300,000.
+
